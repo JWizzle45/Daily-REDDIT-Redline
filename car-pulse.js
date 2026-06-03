@@ -34,7 +34,7 @@ const CONFIG = {
   TO_EMAIL          : process.env.TO_EMAIL,
   DRY_RUN           : process.env.DRY_RUN === "true",
   MAX_POSTS         : parseInt(process.env.MAX_POSTS || "40", 10),
-  MODEL             : "claude-sonnet-4-20250514",
+  MODEL             : "claude-sonnet-4-5",
   MAX_TOKENS        : 8000,
 };
 
@@ -50,23 +50,25 @@ if (missing.length) {
 
 // ─────────────────────────────────────────────
 // REDDIT RSS FEEDS
-// Public subreddit RSS feeds — no API key needed.
-// Each returns the 25 hottest posts.
+// Using RSS endpoints instead of JSON API —
+// RSS works from GitHub Actions CI; the JSON API
+// blocks datacenter IPs with 403s.
+// Format: https://www.reddit.com/r/SUBREDDIT/.rss
 // ─────────────────────────────────────────────
 
 const REDDIT_FEEDS = [
-  { url: "https://www.reddit.com/r/cars/hot.json?limit=15&raw_json=1",       sub: "r/cars"           },
-  { url: "https://www.reddit.com/r/cars/new.json?limit=10&raw_json=1",       sub: "r/cars"           },
-  { url: "https://www.reddit.com/r/whatcar/hot.json?limit=8&raw_json=1",     sub: "r/whatcar"        },
-  { url: "https://www.reddit.com/r/Cartalk/hot.json?limit=8&raw_json=1",     sub: "r/Cartalk"        },
-  { url: "https://www.reddit.com/r/electricvehicles/hot.json?limit=10&raw_json=1", sub: "r/electricvehicles" },
-  { url: "https://www.reddit.com/r/teslamotors/hot.json?limit=8&raw_json=1", sub: "r/teslamotors"    },
-  { url: "https://www.reddit.com/r/formula1/hot.json?limit=8&raw_json=1",    sub: "r/formula1"       },
-  { url: "https://www.reddit.com/r/Justrolledintotheshop/hot.json?limit=8&raw_json=1", sub: "r/Justrolledintotheshop" },
-  { url: "https://www.reddit.com/r/BMW/hot.json?limit=5&raw_json=1",         sub: "r/BMW"            },
-  { url: "https://www.reddit.com/r/Toyota/hot.json?limit=5&raw_json=1",      sub: "r/Toyota"         },
-  { url: "https://www.reddit.com/r/ford/hot.json?limit=5&raw_json=1",        sub: "r/ford"           },
-  { url: "https://www.reddit.com/r/CarTalk/hot.json?limit=5&raw_json=1",     sub: "r/CarTalk"        },
+  { url: "https://www.reddit.com/r/cars/.rss",                   sub: "r/cars"                  },
+  { url: "https://www.reddit.com/r/cars/new/.rss",               sub: "r/cars"                  },
+  { url: "https://www.reddit.com/r/electricvehicles/.rss",       sub: "r/electricvehicles"      },
+  { url: "https://www.reddit.com/r/teslamotors/.rss",            sub: "r/teslamotors"           },
+  { url: "https://www.reddit.com/r/formula1/.rss",               sub: "r/formula1"              },
+  { url: "https://www.reddit.com/r/Justrolledintotheshop/.rss",  sub: "r/Justrolledintotheshop" },
+  { url: "https://www.reddit.com/r/whatcar/.rss",                sub: "r/whatcar"               },
+  { url: "https://www.reddit.com/r/Cartalk/.rss",                sub: "r/Cartalk"               },
+  { url: "https://www.reddit.com/r/BMW/.rss",                    sub: "r/BMW"                   },
+  { url: "https://www.reddit.com/r/Toyota/.rss",                 sub: "r/Toyota"                },
+  { url: "https://www.reddit.com/r/ford/.rss",                   sub: "r/ford"                  },
+  { url: "https://www.reddit.com/r/projectcar/.rss",             sub: "r/projectcar"            },
 ];
 
 // ─────────────────────────────────────────────
@@ -130,53 +132,57 @@ function cleanText(str = "") {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 // ─────────────────────────────────────────────
-// STAGE 1a: FETCH REDDIT (JSON API)
-// Reddit's JSON API is free and public.
-// We fetch /hot and /new for each subreddit.
+// STAGE 1a: FETCH REDDIT (via RSS)
+// Reddit's RSS feeds work from CI/datacenter IPs.
+// The JSON API blocks them; RSS does not.
+// We use rss-parser (already a dependency) to parse.
+// Upvote counts are not available in RSS — we use
+// comment count and recency as a proxy for engagement.
 // ─────────────────────────────────────────────
 
 async function fetchRedditPosts() {
-  log("STAGE 1a: Fetching Reddit posts...");
+  log("STAGE 1a: Fetching Reddit posts via RSS...");
+  const rssParser = new Parser({
+    headers: {
+      "User-Agent": "CarPulseNewsletter/1.0 (daily newsletter bot)",
+    },
+    timeout: 10000,
+  });
   const posts = [];
 
   for (const feed of REDDIT_FEEDS) {
     try {
-      const res = await fetch(feed.url, {
-        headers: {
-          "User-Agent": "CarPulseNewsletter/1.0 (automated newsletter; contact via GitHub)",
-          "Accept": "application/json",
-        },
-      });
+      const data = await rssParser.parseURL(feed.url);
+      for (const item of (data.items || [])) {
+        if (!item.title || !item.link) continue;
 
-      if (!res.ok) {
-        warn(`Reddit ${feed.sub} returned ${res.status}`);
-        continue;
-      }
+        // Skip stickied/mod posts (titles often start with these patterns)
+        const titleLower = item.title.toLowerCase();
+        if (titleLower.startsWith("[mod") || titleLower.startsWith("mod post")) continue;
 
-      const json = await res.json();
-      const children = json?.data?.children || [];
+        // Extract comment count from content if available
+        const commentMatch = (item.content || item.contentSnippet || "").match(/(\d+)\s+comment/i);
+        const comments = commentMatch ? parseInt(commentMatch[1], 10) : 0;
 
-      for (const child of children) {
-        const p = child.data;
-        if (!p || p.stickied || p.over_18) continue;
+        // Extract a thumbnail image if embedded in content
+        const imgMatch = (item.content || "").match(/<img[^>]+src="([^"]+)"/i);
+        const image = imgMatch ? imgMatch[1] : "";
 
         posts.push({
-          source     : "Reddit",
-          subreddit  : feed.sub,
-          title      : p.title || "",
-          text       : cleanText(p.selftext || ""),
-          url        : `https://reddit.com${p.permalink}`,
-          score      : p.score || 0,
-          comments   : p.num_comments || 0,
-          author     : `u/${p.author || "unknown"}`,
-          flair      : p.link_flair_text || "",
-          image      : p.thumbnail && p.thumbnail.startsWith("http") ? p.thumbnail : "",
-          upvote_ratio: p.upvote_ratio || 0,
-          created    : new Date((p.created_utc || 0) * 1000).toISOString(),
+          source    : "Reddit",
+          subreddit : feed.sub,
+          title     : cleanText(item.title),
+          text      : cleanText(item.contentSnippet || item.content || ""),
+          url       : item.link,
+          score     : 0,           // Not available via RSS
+          comments,
+          author    : item.author || item.creator || "unknown",
+          flair     : "",
+          image,
+          pubDate   : item.pubDate || item.isoDate || new Date().toISOString(),
         });
       }
-
-      await sleep(300); // gentle rate limiting
+      await sleep(400); // be polite to Reddit's servers
     } catch (e) {
       warn(`Failed to fetch ${feed.sub}: ${e.message}`);
     }
@@ -190,8 +196,8 @@ async function fetchRedditPosts() {
     return true;
   });
 
-  // Sort by Reddit score (hot = upvotes × time decay, approximated by score)
-  unique.sort((a, b) => b.score - a.score);
+  // Sort by comment count (best engagement proxy available in RSS)
+  unique.sort((a, b) => b.comments - a.comments);
 
   log(`✓ Fetched ${unique.length} Reddit posts from ${REDDIT_FEEDS.length} subreddit feeds.`);
   return unique.slice(0, CONFIG.MAX_POSTS);
@@ -282,7 +288,7 @@ async function scoreAndCluster(redditPosts, xSignals) {
   const top30 = redditPosts.slice(0, 30);
   const postList = top30
     .map((p, i) =>
-      `[${i + 1}] r/${p.subreddit} | Score: ${p.score} | Comments: ${p.comments}\n    "${p.title}" ${p.text ? `— ${p.text.slice(0, 100)}` : ""}`
+      `[${i + 1}] ${p.subreddit} | Comments: ${p.comments} | ${p.pubDate ? new Date(p.pubDate).toLocaleTimeString() : ""}\n    "${p.title}" ${p.text ? `— ${p.text.slice(0, 100)}` : ""}`
     )
     .join("\n");
 
@@ -292,14 +298,14 @@ async function scoreAndCluster(redditPosts, xSignals) {
 
   const stage2Prompt = `You are a car community pulse analyst. Analyze these Reddit posts and X/Twitter signals about cars and automotive topics.
 
-REDDIT POSTS (sorted by score):
+REDDIT POSTS (sorted by comment count — RSS doesn't include upvote scores):
 ${postList}
 
 X/TWITTER SIGNALS:
 ${xList || "No X signals available today."}
 
 Your task:
-1. Identify the TOP THREAD — the single most engaging Reddit post (highest score + comments + controversy potential)
+1. Identify the TOP THREAD — the single most engaging Reddit post (most comments + most controversial or interesting topic)
 2. Find 3–4 TRENDING TOPICS — recurring themes appearing across multiple posts or both platforms
 3. Pick 3 HOT TAKES — posts with spicy opinions, controversies, or strong community reactions
 4. Find any CROSS-PLATFORM BUZZ — topics appearing on both Reddit and X
@@ -363,12 +369,12 @@ TODAY: ${getDisplayDate()}
 TOP THREAD ON REDDIT:
 Title: "${topThread?.title}"
 Subreddit: ${topThread?.subreddit}
-Score: ${topThread?.score} upvotes | ${topThread?.comments} comments
+Comments: ${topThread?.comments} | Subreddit: ${topThread?.subreddit}
 Text: ${topThread?.text || "(link post, no body text)"}
 URL: ${topThread?.url}
 
 HOT TAKES FROM REDDIT:
-${hotTakePosts.map((p, i) => `${i + 1}. [${p.subreddit}] "${p.title}" — ${p.score} upvotes, ${p.comments} comments`).join("\n")}
+${hotTakePosts.map((p, i) => `${i + 1}. [${p.subreddit}] "${p.title}" — ${p.comments} comments`).join("\n")}
 
 TRENDING TOPICS (from both Reddit + X):
 ${(clusters.trending_topics || []).map((t) => `- ${t.name}: ${t.description}`).join("\n")}
@@ -468,7 +474,7 @@ function buildHTML(redditPosts, xSignals, clusters, topThread, hotTakePosts, cop
         <p style="font-size:13px;color:${D.silver};line-height:1.5;margin:0 0 10px 0;">${ht.summary || ""}</p>
         ${post ? `
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          <span style="background:${D.upvote};color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:12px;">▲ ${post.score.toLocaleString()}</span>
+          <span style="background:${D.upvote};color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:12px;">💬 ${post.comments} comments</span>
           <span style="color:${D.muted};font-size:11px;">💬 ${post.comments} comments</span>
           <span style="color:${D.accentAlt};font-size:11px;font-weight:600;">${post.subreddit}</span>
           <a href="${post.url}" style="color:${D.accentAlt};font-size:11px;text-decoration:none;margin-left:auto;">View thread →</a>
@@ -520,7 +526,7 @@ function buildHTML(redditPosts, xSignals, clusters, topThread, hotTakePosts, cop
     <div style="padding:12px 0;border-bottom:1px solid ${D.divider};">
       <a href="${p.url}" style="color:${D.text};text-decoration:none;font-size:13px;font-weight:500;display:block;margin-bottom:4px;line-height:1.4;">${p.title}</a>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <span style="color:${D.upvote};font-size:11px;font-weight:700;">▲ ${p.score.toLocaleString()}</span>
+        <span style="color:${D.upvote};font-size:11px;font-weight:700;">💬 ${p.comments}</span>
         <span style="color:${D.muted};font-size:11px;">${p.subreddit}</span>
         <span style="color:${D.muted};font-size:11px;">💬 ${p.comments}</span>
       </div>
@@ -573,8 +579,8 @@ function buildHTML(redditPosts, xSignals, clusters, topThread, hotTakePosts, cop
         <img src="${heroImage}" alt="Thread hero" style="width:100%;height:200px;object-fit:cover;display:block;background:${D.divider};" onerror="this.style.display='none'">
         <div style="padding:22px;">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-            <span style="background:${D.upvote};color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:12px;">▲ ${(topThread?.score || 0).toLocaleString()}</span>
-            <span style="color:${D.muted};font-size:11px;">💬 ${topThread?.comments || 0} comments</span>
+            <span style="background:${D.upvote};color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:12px;">💬 ${(topThread?.comments || 0).toLocaleString()} comments</span>
+            <span style="color:${D.muted};font-size:11px;">${topThread?.subreddit || ""}</span>
             <span style="color:${D.accentAlt};font-size:11px;font-weight:600;">${topThread?.subreddit || ""}</span>
           </div>
           <h2 style="font-size:22px;font-weight:800;color:${D.text};line-height:1.3;margin-bottom:12px;">${copy.top_thread_headline}</h2>
