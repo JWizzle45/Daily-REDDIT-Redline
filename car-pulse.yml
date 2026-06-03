@@ -1,0 +1,49 @@
+name: CAR PULSE — Social Newsletter
+
+on:
+  schedule:
+    # 7:00 AM PDT (UTC-7, Mar–Nov) = 14:00 UTC
+    # 7:00 AM PST (UTC-8, Nov–Mar) = 15:00 UTC
+    # This cron uses 14:00 UTC (correct for PDT / most of the year).
+    - cron: '0 14 * * *'
+
+  # Manual trigger from GitHub Actions tab (supports dry run)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — generate but do not send email'
+        required: false
+        default: 'false'
+      max_posts:
+        description: 'Max Reddit posts to process (default: 40)'
+        required: false
+        default: '40'
+
+jobs:
+  send-newsletter:
+    name: Fetch, Curate, and Send CAR PULSE
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run CAR PULSE newsletter
+        run: node car-pulse.js
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+          FROM_EMAIL:        ${{ secrets.FROM_EMAIL }}
+          TO_EMAIL:          ${{ secrets.TO_EMAIL }}
+          DRY_RUN:           ${{ github.event.inputs.dry_run || 'false' }}
+          MAX_POSTS:         ${{ github.event.inputs.max_posts || '40' }}

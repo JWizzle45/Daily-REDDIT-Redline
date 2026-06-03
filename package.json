@@ -1,27 +1,21 @@
 {
-  "name": "street-pulse",
+  "name": "car-pulse-newsletter",
   "version": "1.0.0",
-  "description": "Automated car newsletter built from Reddit and X community posts",
-  "main": "src/newsletter.js",
+  "description": "Daily car newsletter tracking what real people say on Reddit and X/Twitter — powered by Claude AI",
+  "main": "car-pulse.js",
   "scripts": {
-    "start": "node src/newsletter.js",
-    "dry-run": "DRY_RUN=true node src/newsletter.js",
-    "dev": "DRY_RUN=true DEBUG=true node src/newsletter.js"
+    "start":   "node car-pulse.js",
+    "dry-run": "DRY_RUN=true node car-pulse.js",
+    "test":    "DRY_RUN=true MAX_POSTS=10 node car-pulse.js",
+    "debug":   "DRY_RUN=true DEBUG=true node car-pulse.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@sendgrid/mail":    "^8.1.0",
+    "rss-parser":        "^3.13.0"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "@sendgrid/mail": "^8.1.3",
-    "rss-parser": "^3.13.0"
-  },
-  "keywords": [
-    "newsletter",
-    "automotive",
-    "reddit",
-    "twitter",
-    "cars"
-  ],
   "license": "MIT"
 }
