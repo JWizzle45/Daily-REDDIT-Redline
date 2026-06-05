@@ -1,0 +1,20 @@
+{
+  "name": "car-pulse-newsletter",
+  "version": "1.1.0",
+  "description": "Daily car newsletter tracking Reddit and X via Claude AI web search",
+  "main": "car-pulse.js",
+  "scripts": {
+    "start":   "node car-pulse.js",
+    "dry-run": "DRY_RUN=true node car-pulse.js",
+    "test":    "DRY_RUN=true node car-pulse.js",
+    "debug":   "DRY_RUN=true DEBUG=true node car-pulse.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@sendgrid/mail":    "^8.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
